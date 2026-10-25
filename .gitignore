@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+
+# personal media + timed lyric files stay local, never committed
+*.jpg
+*.jpeg
+*.png
+*.mp3
+*.m4a
+*.wav
+*.mp4
+lyrics.json
+*_lyrics.json
+regions.json
+Elvis_Presley.*
