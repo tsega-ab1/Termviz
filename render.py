@@ -202,18 +202,10 @@ class PortraitEngine:
 # ---------------------------------------------------------------------------
 
 def load_lyrics(path):
-    """
-    Expected JSON format (see lyrics_example.json):
-    [
-      {"start": 12.0, "end": 14.5, "text": "LIKE THIS",
-       "region": "forehead", "effect": "typewriter", "size": 22},
-      ...
-    ]
-    """
-    with open(path) as f:
-        data = json.load(f)
-    data.sort(key=lambda e: e["start"])
-    return data
+    """Load timed lyrics from flat JSON, whisper-style JSON or .lrc
+    (see lyrics_io.py for the accepted formats)."""
+    from lyrics_io import load_lyrics as _load
+    return _load(path)
 
 
 def bayer_mask(shape, density):
@@ -382,14 +374,10 @@ _BRAILLE_BITS = [
 ]
 
 
-def frame_to_braille_ansi(bw_arr):
-    """bw_arr: 2D array of 0/255. Each character cell packs a 2x4 block of
-    pixels into one Unicode braille character (dot=white, gap=black),
-    giving 4x the pixel density of frame_to_ansi in the same terminal
-    space. Single fg/bg pair for the whole frame since braille itself
-    already encodes the black/white pattern -- no per-cell color runs
-    needed, which also makes this cheaper to emit than the half-block path.
-    """
+def braille_lines(bw_arr):
+    """bw_arr: 2D array of 0/255. Returns one string per 4 pixel rows, each
+    character packing a 2x4 block of pixels into one braille glyph
+    (white pixel = raised dot). No color codes -- callers add their own."""
     h, w = bw_arr.shape
     lines = []
     for y in range(0, h, 4):
@@ -408,8 +396,14 @@ def frame_to_braille_ansi(bw_arr):
                         mask |= _BRAILLE_BITS[dy][dx]
             row_chars.append(chr(0x2800 + mask))
         lines.append("".join(row_chars))
-    # one fg/bg color escape for the whole frame is enough
-    return "\x1b[38;2;255;255;255;48;2;0;0;0m" + "\n".join(lines) + "\x1b[0m"
+    return lines
+
+
+def frame_to_braille_ansi(bw_arr):
+    """Whole frame as one ANSI string: a single white-on-black color escape
+    (braille already encodes the black/white pattern) plus the glyph rows."""
+    return ("\x1b[38;2;255;255;255;48;2;0;0;0m"
+            + "\n".join(braille_lines(bw_arr)) + "\x1b[0m")
 
 
 def render_frame(bw_arr, renderer="halfblock"):
@@ -516,95 +510,62 @@ def start_audio(audio_path):
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Player
 # ---------------------------------------------------------------------------
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--image", required=True)
-    ap.add_argument("--lyrics", required=True)
-    ap.add_argument("--audio", required=True)
-    ap.add_argument("--regions", default=None,
-                     help="optional JSON file overriding DEFAULT_REGIONS")
-    ap.add_argument("--cols", type=int, default=None,
-                     help="defaults to current terminal width")
-    ap.add_argument("--fps", type=float, default=12.0)
-    ap.add_argument("--no-square", action="store_true",
-                     help="use full rectangular frame instead of centered square")
-    ap.add_argument("--style", default="threshold",
-                     choices=["dither", "threshold", "threshold-soft"],
-                     help="black/white conversion style (default: threshold, solid regions)")
-    ap.add_argument("--threshold", type=int, default=128,
-                     help="cutoff 0-255 for threshold styles; lower = more white")
-    ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"],
-                     help="braille = 4x pixel density (default), halfblock = older/wider-compatible")
-    ap.add_argument("--skip-zoom-wait", action="store_true",
-                     help="don't pause at startup asking to zoom out for more resolution")
-    ap.add_argument("--audio-delay", type=float, default=0.0,
-                     help="shift lyric timing by N seconds (+/-) to compensate for "
-                          "audio backend startup latency (e.g. termux-media-player). "
-                          "Positive = lyrics appear later relative to audio.")
-    args = ap.parse_args()
-
-    ensure_terminal_size(skip=args.skip_zoom_wait)
+def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
+         style="threshold", threshold=128, renderer="braille", regions_path=None,
+         audio_delay=0.0, skip_zoom_wait=False):
+    """Show the portrait with lyrics drawn on it. Only `image` is required:
+    with no audio the lyric timeline simply loops on its own clock, with no
+    lyrics the portrait just stays up. Returns when the audio ends or on Ctrl+C.
+    """
+    ensure_terminal_size(skip=skip_zoom_wait)
 
     term_size = shutil.get_terminal_size((80, 40))
     term_cols, term_lines = term_size.columns, term_size.lines
 
-    if args.cols:
-        cols = args.cols
+    if cols:
+        pass
     else:
-        # BUG FIX: this used to size the square canvas off terminal WIDTH
-        # only, ignoring how many lines actually fit on screen. If the
-        # rendered frame ends up taller than the visible viewport, the
-        # terminal scrolls every frame instead of overwriting in place,
-        # producing repeated/stacked-looking garbage output.
-        # Each character row holds 2 pixel-rows (half-block trick), and we
-        # reserve 2 lines for the "~/termviz $" prompt line that reappears
-        # after the app exits, so the whole square frame stays fully
-        # visible without ever forcing a scroll.
+        # size the square canvas by terminal HEIGHT as well as width, so the
+        # frame never ends up taller than the screen (which would scroll it);
+        # 2 lines are reserved for the prompt that reappears afterwards
         cols = max(20, min(term_cols, (term_lines - 2) * 2))
 
     regions = DEFAULT_REGIONS
-    if args.regions:
-        with open(args.regions) as f:
+    if regions_path:
+        with open(regions_path) as f:
             regions = json.load(f)
 
-    engine = PortraitEngine(args.image, cols, regions, square=not args.no_square,
-                             style=args.style, threshold=args.threshold,
-                             renderer=args.renderer)
-    lyrics = load_lyrics(args.lyrics)
+    engine = PortraitEngine(image, cols, regions, square=square, style=style,
+                             threshold=threshold, renderer=renderer)
+    lyrics = load_lyrics(lyrics_path) if lyrics_path else []
+    duration = get_duration(audio) if audio else None
 
-    duration = get_duration(args.audio)
-
-    # diagnostics printed BEFORE the alt-screen swap, so they stay in your
-    # normal scrollback and are readable after the program exits -- lets
-    # you actually confirm the lyrics file loaded correctly instead of
-    # guessing whether "nothing rendered" was a data problem or a timing one
-    print(f"[diagnostic] loaded {len(lyrics)} lyric entries from {args.lyrics}")
-    if lyrics:
-        print(f"[diagnostic] first entry: {lyrics[0]['start']}s-{lyrics[0]['end']}s "
-              f"'{lyrics[0]['text'][:40]}'")
-        print(f"[diagnostic] last entry:  {lyrics[-1]['start']}s-{lyrics[-1]['end']}s "
-              f"'{lyrics[-1]['text'][:40]}'")
-    print(f"[diagnostic] audio duration: {duration if duration else 'unknown'}s, "
-          f"audio-delay offset: {args.audio_delay}s")
-    print("[diagnostic] starting in 1 second...")
+    # diagnostics go to the normal screen (before the alt-screen swap) so
+    # they stay readable in scrollback after the player exits
+    print(f"[diagnostic] image: {image}")
+    print(f"[diagnostic] lyrics: {len(lyrics)} entries"
+          + (f" from {lyrics_path}" if lyrics_path else " (none)"))
+    print(f"[diagnostic] audio: {audio or 'none (silent loop)'}"
+          + (f", {duration:.1f}s" if duration else "")
+          + f", audio-delay offset {audio_delay}s")
     time.sleep(1)
 
-    audio_proc, measured_start_time = start_audio(args.audio)
-    t0 = measured_start_time + args.audio_delay
+    if audio:
+        audio_proc, started = start_audio(audio)
+    else:
+        audio_proc, started = _NullProc(), time.time()
+    t0 = started + audio_delay
 
-    frame_interval = 1.0 / args.fps
+    # no audio: loop the lyric timeline so there is still something to watch
+    loop_len = (lyrics[-1]["end"] + 1.0) if (not audio and lyrics) else None
 
-    # Enter the "alternate screen buffer" and hide the cursor -- this is
-    # the standard technique full-screen terminal apps (htop, vim, cava,
-    # cmatrix) use to get a fixed-size viewport that CANNOT scroll out
-    # from under repeated cursor-home redraws. Without this, if a frame is
-    # taller than the visible terminal, printing it forces a scroll, and
-    # "\x1b[H" then homes to the top of the *scrolled* view rather than
-    # the original frame position -- producing exactly the
-    # repeated/stacked garbled output this fixes.
+    frame_interval = 1.0 / fps
+
+    # the alternate screen buffer gives a fixed viewport that cannot scroll
+    # out from under the repeated cursor-home redraws
     sys.stdout.write("\x1b[?1049h\x1b[?25l\x1b[2J")
     sys.stdout.flush()
 
@@ -612,8 +573,11 @@ def main():
         while True:
             frame_start = time.time()
             elapsed = frame_start - t0
-            if duration and elapsed > duration + 0.5:
+            if audio and duration and elapsed > duration + 0.5:
                 break
+            if loop_len and elapsed > loop_len:
+                t0 = frame_start
+                elapsed = 0.0
 
             canvas = engine.base.copy()
             active = [e for e in lyrics if e["start"] <= elapsed <= e["end"]]
@@ -626,20 +590,50 @@ def main():
             arr = apply_glitch_rows(arr)
             arr = np.clip(arr, 0, 255)
 
-            ansi = render_frame(arr, renderer=args.renderer)
+            ansi = render_frame(arr, renderer=renderer)
             sys.stdout.write("\x1b[H" + ansi)
             sys.stdout.flush()
 
-            elapsed_render = time.time() - frame_start
-            time.sleep(max(0.0, frame_interval - elapsed_render))
+            time.sleep(max(0.0, frame_interval - (time.time() - frame_start)))
     except KeyboardInterrupt:
         pass
     finally:
         audio_proc.terminate()
-        # restore cursor + leave the alternate screen buffer, returning
-        # the user cleanly to their normal scrollback and prompt
         sys.stdout.write("\x1b[0m\x1b[?25h\x1b[?1049l")
         sys.stdout.flush()
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Play a portrait with lyrics (CLI; "
+                                 "use termviz.py for the dashboard)")
+    ap.add_argument("--image", required=True)
+    ap.add_argument("--lyrics", default=None, help="optional lyrics (.json or .lrc)")
+    ap.add_argument("--audio", default=None, help="optional music file")
+    ap.add_argument("--regions", default=None,
+                     help="optional JSON file overriding DEFAULT_REGIONS")
+    ap.add_argument("--cols", type=int, default=None,
+                     help="defaults to fit the terminal")
+    ap.add_argument("--fps", type=float, default=12.0)
+    ap.add_argument("--no-square", action="store_true",
+                     help="use full rectangular frame instead of centered square")
+    ap.add_argument("--style", default="threshold",
+                     choices=["dither", "threshold", "threshold-soft"],
+                     help="black/white conversion style (default: threshold)")
+    ap.add_argument("--threshold", type=int, default=128,
+                     help="cutoff 0-255 for threshold styles; lower = more white")
+    ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"],
+                     help="braille = 4x pixel density (default)")
+    ap.add_argument("--skip-zoom-wait", action="store_true",
+                     help="don't pause at startup asking to zoom out for more resolution")
+    ap.add_argument("--audio-delay", type=float, default=0.0,
+                     help="shift lyric timing by N seconds (+/-); positive = lyrics later")
+    args = ap.parse_args()
+
+    play(args.image, lyrics_path=args.lyrics, audio=args.audio, cols=args.cols,
+         fps=args.fps, square=not args.no_square, style=args.style,
+         threshold=args.threshold, renderer=args.renderer,
+         regions_path=args.regions, audio_delay=args.audio_delay,
+         skip_zoom_wait=args.skip_zoom_wait)
 
 
 if __name__ == "__main__":

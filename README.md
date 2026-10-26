@@ -8,7 +8,10 @@ on the face.
 
 | File | Purpose |
 |---|---|
-| `render.py` | Core engine + full player (portrait + lyrics + audio) |
+| `termviz.py` | **Start here.** Opens the dashboard, plays, returns to the dashboard |
+| `dashboard.py` | Terminal dashboard: pick image / music / lyrics, preview, Play |
+| `lyrics_io.py` | Reads lyrics from flat JSON, whisper-style JSON or `.lrc` |
+| `render.py` | Core engine + `play()` (portrait + lyrics + optional audio) |
 | `view_continuous.py` | Loops the lyric animation on its own clock, **no audio** |
 | `view_portrait.py` | Static single-frame portrait check |
 | `view_text.py` | Static single-line text-on-portrait check |
@@ -29,11 +32,23 @@ from source on Android and fails.
 ## Run
 
 ```bash
-# animation only, no audio
-python view_continuous.py --image portrait.jpg --lyrics lyrics.json
+python termviz.py
+```
 
-# full player
-python render.py --image portrait.jpg --lyrics lyrics.json --audio song.m4a
+The dashboard lists the images, music and lyrics it finds in the current
+folder, `~/storage/shared/{Download,Music,DCIM,Pictures,Documents}` and
+`~`. Press `1`, `2` or `3` to choose one (or paste a path), `4` to play.
+Only the image is required: with no music the lyrics loop silently, with no
+lyrics the portrait just stays up. Picking a song auto-attaches a lyrics
+file with the same name (`song.m4a` + `song.lrc`). Your last choices are
+remembered in `~/.termviz.json`. Ctrl+C stops playback and returns to the
+dashboard.
+
+Skip the dashboard:
+
+```bash
+python termviz.py --image portrait.jpg --music song.m4a --lyrics song.lrc --play
+python render.py  --image portrait.jpg --lyrics lyrics.json --audio song.m4a   # old CLI
 ```
 
 ## Lyrics format
@@ -46,6 +61,10 @@ python render.py --image portrait.jpg --lyrics lyrics.json --audio song.m4a
 
 `effect` is one of `hold`, `typewriter`, `fade`, `glitch`. Text is always the
 same size, centered, and black.
+
+The same fields work in a whisper-style file (`{"segments": [...]}`), and
+`.lrc` files (`[mm:ss.xx]text`) are read directly, so `convert_lyrics.py` is
+no longer needed for playback.
 
 ## Useful flags
 
