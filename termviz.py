@@ -37,6 +37,9 @@ def main():
                      choices=["dither", "threshold", "threshold-soft"])
     ap.add_argument("--threshold", type=int, default=128)
     ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"])
+    ap.add_argument("--layout", default="panel", choices=["panel", "overlay"],
+                     help="panel = record + lyrics under the portrait (default); "
+                          "overlay = lyrics drawn on the face")
     ap.add_argument("--audio-delay", type=float, default=0.0)
     ap.add_argument("--skip-zoom-wait", action="store_true")
     args = ap.parse_args()
@@ -52,7 +55,7 @@ def main():
     play_opts = dict(cols=args.cols, fps=args.fps, square=not args.no_square,
                      style=args.style, threshold=args.threshold,
                      renderer=args.renderer, audio_delay=args.audio_delay,
-                     skip_zoom_wait=args.skip_zoom_wait)
+                     skip_zoom_wait=args.skip_zoom_wait, layout=args.layout)
 
     first = True
     while True:

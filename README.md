@@ -1,8 +1,17 @@
 # termviz — retro terminal portrait visualizer
 
 A black-and-white, braille-dot portrait that runs inside a terminal (built
-and tested in Termux on Android), with lyric text drawn big and centered
-on the face.
+and tested in Termux on Android). Under the portrait a vinyl record spins
+while the lyrics type out beside it as real terminal text.
+
+```
+        portrait (braille)
+ ─────────────────────────────────
+  [ spinning record ]   previous line (dim)
+                        CURRENT LINE (typed out)
+                        next line (dim)
+                        0:42 ━━━●──── 3:21
+```
 
 ## Files
 
@@ -12,6 +21,8 @@ on the face.
 | `dashboard.py` | Terminal dashboard: pick image / music / lyrics, preview, Play |
 | `lyrics_io.py` | Reads lyrics from flat JSON, whisper-style JSON or `.lrc` |
 | `render.py` | Core engine + `play()` (portrait + lyrics + optional audio) |
+| `panel.py` | The panel layout: spinning record, lyric text, progress bar |
+| `braille.py` | Fast numpy pixel-array -> braille conversion |
 | `view_continuous.py` | Loops the lyric animation on its own clock, **no audio** |
 | `view_portrait.py` | Static single-frame portrait check |
 | `view_text.py` | Static single-line text-on-portrait check |
@@ -44,6 +55,10 @@ file with the same name (`song.m4a` + `song.lrc`). Your last choices are
 remembered in `~/.termviz.json`. Ctrl+C stops playback and returns to the
 dashboard.
 
+Layouts: `--layout panel` (default) puts the record and lyrics under the
+portrait; `--layout overlay` draws the lyrics big and black on the face
+instead. The panel needs the braille renderer (the default).
+
 Skip the dashboard:
 
 ```bash
@@ -59,8 +74,9 @@ python render.py  --image portrait.jpg --lyrics lyrics.json --audio song.m4a   #
 ]
 ```
 
-`effect` is one of `hold`, `typewriter`, `fade`, `glitch`. Text is always the
-same size, centered, and black.
+In the panel layout every line types itself out and the `effect` field is
+ignored. In the overlay layout `effect` is one of `hold`, `typewriter`,
+`fade`, `glitch`, and the text is always the same size, centered, and black.
 
 The same fields work in a whisper-style file (`{"segments": [...]}`), and
 `.lrc` files (`[mm:ss.xx]text`) are read directly, so `convert_lyrics.py` is

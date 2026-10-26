@@ -26,6 +26,8 @@ import time
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
+from braille import braille_lines  # noqa: F401  (also used by dashboard.py)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -374,31 +376,6 @@ _BRAILLE_BITS = [
 ]
 
 
-def braille_lines(bw_arr):
-    """bw_arr: 2D array of 0/255. Returns one string per 4 pixel rows, each
-    character packing a 2x4 block of pixels into one braille glyph
-    (white pixel = raised dot). No color codes -- callers add their own."""
-    h, w = bw_arr.shape
-    lines = []
-    for y in range(0, h, 4):
-        row_chars = []
-        for x in range(0, w, 2):
-            mask = 0
-            for dy in range(4):
-                yy = y + dy
-                if yy >= h:
-                    continue
-                for dx in range(2):
-                    xx = x + dx
-                    if xx >= w:
-                        continue
-                    if bw_arr[yy, xx] >= 128:
-                        mask |= _BRAILLE_BITS[dy][dx]
-            row_chars.append(chr(0x2800 + mask))
-        lines.append("".join(row_chars))
-    return lines
-
-
 def frame_to_braille_ansi(bw_arr):
     """Whole frame as one ANSI string: a single white-on-black color escape
     (braille already encodes the black/white pattern) plus the glyph rows."""
@@ -515,19 +492,31 @@ def start_audio(audio_path):
 
 def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
          style="threshold", threshold=128, renderer="braille", regions_path=None,
-         audio_delay=0.0, skip_zoom_wait=False):
-    """Show the portrait with lyrics drawn on it. Only `image` is required:
-    with no audio the lyric timeline simply loops on its own clock, with no
-    lyrics the portrait just stays up. Returns when the audio ends or on Ctrl+C.
+         audio_delay=0.0, skip_zoom_wait=False, layout="panel"):
+    """Show the portrait with lyrics. Only `image` is required: with no audio
+    the lyric timeline simply loops on its own clock, with no lyrics the
+    portrait just stays up. Returns when the audio ends or on Ctrl+C.
+
+    layout="panel":   portrait on top; under it a spinning record and the
+                      lyrics as real terminal text (needs the braille renderer)
+    layout="overlay": lyrics drawn big and black on the face itself
     """
     ensure_terminal_size(skip=skip_zoom_wait)
 
     term_size = shutil.get_terminal_size((80, 40))
     term_cols, term_lines = term_size.columns, term_size.lines
 
-    if cols:
-        pass
-    else:
+    use_panel = (layout == "panel" and renderer == "braille")
+    plan = None
+    if use_panel:
+        import panel
+        plan = panel.plan_layout(term_cols, term_lines)
+        if cols:                                  # explicit --cols wins for the portrait
+            plan["portrait_cols"] = cols
+            plan["portrait_rows"] = cols // 2
+            plan["portrait_left"] = max(0, (term_cols - cols) // 2)
+        cols = plan["portrait_cols"]
+    elif not cols:
         # size the square canvas by terminal HEIGHT as well as width, so the
         # frame never ends up taller than the screen (which would scroll it);
         # 2 lines are reserved for the prompt that reappears afterwards
@@ -551,6 +540,8 @@ def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
     print(f"[diagnostic] audio: {audio or 'none (silent loop)'}"
           + (f", {duration:.1f}s" if duration else "")
           + f", audio-delay offset {audio_delay}s")
+    print(f"[diagnostic] layout: {'panel' if use_panel else 'overlay'}"
+          + ("" if use_panel or layout != "panel" else " (panel needs --renderer braille)"))
     time.sleep(1)
 
     if audio:
@@ -563,6 +554,11 @@ def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
     loop_len = (lyrics[-1]["end"] + 1.0) if (not audio and lyrics) else None
 
     frame_interval = 1.0 / fps
+
+    if use_panel:
+        screen = panel.PanelLayout(plan)
+        base_arr = np.array(engine.base)
+        base_lines = braille_lines(base_arr)      # the portrait never changes...
 
     # the alternate screen buffer gives a fixed viewport that cannot scroll
     # out from under the repeated cursor-home redraws
@@ -579,19 +575,30 @@ def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
                 t0 = frame_start
                 elapsed = 0.0
 
-            canvas = engine.base.copy()
-            active = [e for e in lyrics if e["start"] <= elapsed <= e["end"]]
-            for entry in active:
-                draw_lyric(canvas, engine, entry, elapsed)
+            if use_panel:
+                shown_t = max(0.0, elapsed)
+                lines = base_lines
+                if random.random() < 0.04:        # ...except for the occasional glitch
+                    glitched = apply_glitch_rows(base_arr.astype(np.int16), chance=1.0)
+                    lines = braille_lines(glitched)
+                frame = screen.compose(
+                    lines,
+                    screen.disk_lines(shown_t * panel.DEG_PER_SEC),
+                    screen.text.rows(lyrics, shown_t, duration))
+            else:
+                canvas = engine.base.copy()
+                active = [e for e in lyrics if e["start"] <= elapsed <= e["end"]]
+                for entry in active:
+                    draw_lyric(canvas, engine, entry, elapsed)
 
-            arr = np.array(canvas).astype(np.int16)
-            arr = apply_scanlines(arr)
-            arr = apply_flicker(arr)
-            arr = apply_glitch_rows(arr)
-            arr = np.clip(arr, 0, 255)
+                arr = np.array(canvas).astype(np.int16)
+                arr = apply_scanlines(arr)
+                arr = apply_flicker(arr)
+                arr = apply_glitch_rows(arr)
+                arr = np.clip(arr, 0, 255)
+                frame = "\x1b[H" + render_frame(arr, renderer=renderer)
 
-            ansi = render_frame(arr, renderer=renderer)
-            sys.stdout.write("\x1b[H" + ansi)
+            sys.stdout.write(frame)
             sys.stdout.flush()
 
             time.sleep(max(0.0, frame_interval - (time.time() - frame_start)))
@@ -623,6 +630,9 @@ def main():
                      help="cutoff 0-255 for threshold styles; lower = more white")
     ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"],
                      help="braille = 4x pixel density (default)")
+    ap.add_argument("--layout", default="panel", choices=["panel", "overlay"],
+                     help="panel = record + lyrics under the portrait (default); "
+                          "overlay = lyrics on the face")
     ap.add_argument("--skip-zoom-wait", action="store_true",
                      help="don't pause at startup asking to zoom out for more resolution")
     ap.add_argument("--audio-delay", type=float, default=0.0,
@@ -633,7 +643,7 @@ def main():
          fps=args.fps, square=not args.no_square, style=args.style,
          threshold=args.threshold, renderer=args.renderer,
          regions_path=args.regions, audio_delay=args.audio_delay,
-         skip_zoom_wait=args.skip_zoom_wait)
+         skip_zoom_wait=args.skip_zoom_wait, layout=args.layout)
 
 
 if __name__ == "__main__":
