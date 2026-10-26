@@ -611,9 +611,10 @@ def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Play a portrait with lyrics (CLI; "
-                                 "use termviz.py for the dashboard)")
-    ap.add_argument("--image", required=True)
+    ap = argparse.ArgumentParser(description="Play a portrait with lyrics. "
+                                 "Run with no --image to open the dashboard.")
+    ap.add_argument("--image", default=None,
+                     help="portrait to show (omit to open the dashboard)")
     ap.add_argument("--lyrics", default=None, help="optional lyrics (.json or .lrc)")
     ap.add_argument("--audio", default=None, help="optional music file")
     ap.add_argument("--regions", default=None,
@@ -638,6 +639,18 @@ def main():
     ap.add_argument("--audio-delay", type=float, default=0.0,
                      help="shift lyric timing by N seconds (+/-); positive = lyrics later")
     args = ap.parse_args()
+
+    if not args.image:
+        # no image given -> the dashboard (pick image / music / lyrics)
+        import termviz
+        termviz.main()
+        return
+
+    for label, path in (("image", args.image), ("lyrics", args.lyrics),
+                        ("audio", args.audio)):
+        if path and not os.path.isfile(os.path.expanduser(path)):
+            raise SystemExit(f"{label} file not found: {path}\n"
+                             "(run without --image to pick files in the dashboard)")
 
     play(args.image, lyrics_path=args.lyrics, audio=args.audio, cols=args.cols,
          fps=args.fps, square=not args.no_square, style=args.style,
