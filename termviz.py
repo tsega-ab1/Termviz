@@ -11,8 +11,10 @@ anything before pressing Play.
 
 import argparse
 import os
+import time
 
 import dashboard
+import dock
 import render
 
 
@@ -30,11 +32,15 @@ def main():
     ap.add_argument("--lyrics", help="lyrics file, .json or .lrc (optional)")
     ap.add_argument("--play", action="store_true",
                      help="skip the dashboard and play right away (needs an image)")
+    ap.add_argument("--dock", action="store_true",
+                     help="with --play: use the mini bar (tmux) instead of full screen")
+    ap.add_argument("--bar-rows", type=int, default=dock.DEFAULT_ROWS,
+                     help="height of the mini bar in terminal rows")
     ap.add_argument("--cols", type=int, default=None)
     ap.add_argument("--fps", type=float, default=12.0)
     ap.add_argument("--no-square", action="store_true")
-    ap.add_argument("--style", default="threshold",
-                     choices=["dither", "threshold", "threshold-soft"])
+    ap.add_argument("--style", default="detail",
+                     choices=["detail", "dither", "threshold", "threshold-soft"])
     ap.add_argument("--threshold", type=int, default=128)
     ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"])
     ap.add_argument("--layout", default="panel", choices=["panel", "overlay"],
@@ -68,6 +74,18 @@ def main():
         first = False
         if chosen is None:
             break
+        want_dock = chosen.get("mode") == "dock" or (args.play and args.dock)
+        if want_dock and chosen.get("music"):
+            ok, message = dock.launch(chosen, style=args.style, threshold=args.threshold,
+                                      rows=args.bar_rows)   # may hand the terminal to tmux
+            print(message)
+            if ok:
+                break
+            print("falling back to full screen...")
+            time.sleep(2)
+        elif want_dock:
+            print("mini bar needs a music file - playing full screen instead")
+            time.sleep(1.5)
         try:
             render.play(chosen["image"], lyrics_path=chosen["lyrics"],
                         audio=chosen["music"], **play_opts)

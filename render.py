@@ -107,8 +107,38 @@ def ensure_terminal_size(min_lines=35, min_cols=70, skip=False):
 # Image engine
 # ---------------------------------------------------------------------------
 
-def bw_convert(img, style="threshold", threshold=128, contrast_boost=True):
+def _atkinson(img):
+    """Atkinson error-diffusion dither: crisper than Floyd-Steinberg (it
+    deliberately drops 1/4 of the error), which keeps edges and small
+    features -- eyes, mouth, hair strands -- readable at tiny sizes."""
+    arr = np.asarray(img, dtype=np.float64)
+    h, w = arr.shape
+    pad = np.zeros((h + 2, w + 4))
+    pad[:h, 1:w + 1] = arr
+    rows = pad.tolist()                       # plain lists: far faster than numpy item access
+    for y in range(h):
+        r0, r1, r2 = rows[y], rows[y + 1], rows[y + 2]
+        for x in range(1, w + 1):
+            old = r0[x]
+            new = 255.0 if old >= 128 else 0.0
+            r0[x] = new
+            e = (old - new) * 0.125
+            if e:
+                r0[x + 1] += e
+                r0[x + 2] += e
+                r1[x - 1] += e
+                r1[x] += e
+                r1[x + 1] += e
+                r2[x] += e
+    out = np.array(rows[:h])[:, 1:w + 1]
+    from PIL import Image as _Image
+    return _Image.fromarray(out.astype(np.uint8))
+
+
+def bw_convert(img, style="detail", threshold=128, contrast_boost=True):
     """Convert a grayscale PIL image to pure black/white using one of:
+      - "detail": local contrast + sharpening + Atkinson dither -- the
+        densest, most detailed look at a given size (default)
       - "dither": Floyd-Steinberg error-diffusion (speckled, simulates
         gray tones via scattered pixels)
       - "threshold": hard cutoff, every pixel goes fully black or white
@@ -120,6 +150,12 @@ def bw_convert(img, style="threshold", threshold=128, contrast_boost=True):
 
     if contrast_boost:
         img = ImageOps.autocontrast(img, cutoff=1)
+
+    if style == "detail":
+        eq = ImageOps.equalize(img)                       # local-ish contrast
+        img = Image.blend(img, eq, 0.5)
+        img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=200, threshold=2))
+        return _atkinson(img)
 
     if style == "dither":
         return img.convert("1", dither=Image.FLOYDSTEINBERG).convert("L")
@@ -133,7 +169,7 @@ def bw_convert(img, style="threshold", threshold=128, contrast_boost=True):
 
 class PortraitEngine:
     def __init__(self, image_path, cols, regions, square=True,
-                 style="threshold", threshold=128, renderer="halfblock"):
+                 style="detail", threshold=128, renderer="halfblock"):
         self.cols = cols
         self.regions = regions
         self.renderer = renderer
@@ -491,7 +527,7 @@ def start_audio(audio_path):
 # ---------------------------------------------------------------------------
 
 def play(image, lyrics_path=None, audio=None, cols=None, fps=12.0, square=True,
-         style="threshold", threshold=128, renderer="braille", regions_path=None,
+         style="detail", threshold=128, renderer="braille", regions_path=None,
          audio_delay=0.0, skip_zoom_wait=False, layout="panel"):
     """Show the portrait with lyrics. Only `image` is required: with no audio
     the lyric timeline simply loops on its own clock, with no lyrics the
@@ -624,9 +660,9 @@ def main():
     ap.add_argument("--fps", type=float, default=12.0)
     ap.add_argument("--no-square", action="store_true",
                      help="use full rectangular frame instead of centered square")
-    ap.add_argument("--style", default="threshold",
-                     choices=["dither", "threshold", "threshold-soft"],
-                     help="black/white conversion style (default: threshold)")
+    ap.add_argument("--style", default="detail",
+                     choices=["detail", "dither", "threshold", "threshold-soft"],
+                     help="black/white conversion style (default: detail)")
     ap.add_argument("--threshold", type=int, default=128,
                      help="cutoff 0-255 for threshold styles; lower = more white")
     ap.add_argument("--renderer", default="braille", choices=["halfblock", "braille"],

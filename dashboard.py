@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 
+import finder
 import lyrics_io
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -223,7 +224,7 @@ def thumb_lines(path):
             import numpy as np
             import render
             eng = render.PortraitEngine(path, THUMB_COLS, render.DEFAULT_REGIONS,
-                                         square=True, style="dither", renderer="braille")
+                                         square=True, style="detail", renderer="braille")
             _thumb_cache[path] = render.braille_lines(np.array(eng.base))
         except Exception:
             _thumb_cache[path] = None
@@ -281,7 +282,9 @@ def draw(sel, msg=""):
         f"{rev(' 2 ')} Music   {music_v}",
         f"{rev(' 3 ')} Lyrics  {lyrics_v}",
         "",
-        f"{rev(' 4 ')} Play     {rev(' q ')} Quit",
+        f"{rev(' 4 ')} Play in mini bar  (keeps your shell)",
+        f"{rev(' 5 ')} Play full screen",
+        f"{rev(' q ')} Quit",
         "",
         dim("type a key, then Enter"),
     ]
@@ -309,29 +312,40 @@ def where(path):
     return dim(f"{clip(os.path.basename(os.path.dirname(path)) or '/', 14)} · {age(path)}")
 
 
+def search_all(kind, query):
+    """Search every folder under home / mounted drives by file name."""
+    validator = looks_like_lyrics if kind == "lyrics" else None
+    return finder.search(KIND_EXT[kind], query, validator=validator)
+
+
 def pick(kind, current):
-    """List matching files and let the user choose one, or type a path.
-    Returns the chosen path (or `current` if cancelled)."""
+    """List matching files and let the user choose one, search everywhere by
+    typing a name, or type/Tab-complete a path. Returns the chosen path (or
+    `current` if cancelled)."""
+    finder.enable_path_completion()
     items = scan(kind)
+    title = f"{len(items)} found nearby"
     per, page, note = 8, 0, ""
-    pages = max(1, (len(items) + per - 1) // per)
     while True:
+        pages = max(1, (len(items) + per - 1) // per)
+        page = min(page, pages - 1)
         clear()
-        print(bold(f"Choose {KIND_LABEL[kind]}") + dim(f"   {len(items)} found"))
+        print(bold(f"Choose {KIND_LABEL[kind]}") + dim(f"   {title}"))
         print()
         shown = items[page * per:(page + 1) * per]
         for i, p in enumerate(shown, 1):
             print(f" {rev(f' {i} ')} {clip(os.path.basename(p), 32):<32} {where(p)}")
         if not shown:
-            print(dim("  nothing found in Download / Music / Pictures / DCIM / this folder"))
+            print(dim("  nothing here - type part of a file name to search everywhere"))
         print()
-        hints = ["number = choose", "or paste/type a file path"]
+        hints = ["number = choose", "type a NAME to search all folders",
+                 "* = list everything", "or a path (Tab completes it)"]
         if pages > 1:
             hints.append(f"> next · < previous (page {page + 1}/{pages})")
         if kind == "lyrics":
             hints.append("0 = no lyrics")
         hints.append("Enter = keep current")
-        print(dim("  " + "  ·  ".join(hints)))
+        print(dim("  " + "\n  ".join(hints)))
         if note:
             print("\n" + bold(note))
         try:
@@ -355,16 +369,31 @@ def pick(kind, current):
                 return shown[n - 1]
             note = f"No item {n} on this page."
             continue
+
         path = os.path.abspath(os.path.expanduser(s.strip("'\"")))
-        if not os.path.isfile(path):
-            note = "File not found: " + clip(path, 50)
-        elif os.path.splitext(path)[1].lower() not in KIND_EXT[kind]:
-            note = "That doesn't look like a " + kind + " file (" + \
-                   ", ".join(sorted(KIND_EXT[kind])) + ")."
-        elif kind == "lyrics" and not looks_like_lyrics(path):
-            note = "Couldn't read timed lyrics from that file."
-        else:
-            return path
+        pathlike = os.sep in s or s.startswith("~") or os.path.isfile(path)
+        if pathlike:
+            if not os.path.isfile(path):
+                note = "File not found: " + clip(path, 50)
+            elif os.path.splitext(path)[1].lower() not in KIND_EXT[kind]:
+                note = "That doesn't look like a " + kind + " file (" + \
+                       ", ".join(sorted(KIND_EXT[kind])) + ")."
+            elif kind == "lyrics" and not looks_like_lyrics(path):
+                note = "Couldn't read timed lyrics from that file."
+            else:
+                return path
+            continue
+
+        # anything else = a name search across the whole home folder + drives
+        query = "" if s == "*" else s
+        print(dim("\n  searching all folders..."))
+        sys.stdout.flush()
+        items, stopped = search_all(kind, query)
+        page = 0
+        label = "everything" if not query else f"\"{query}\""
+        title = f"{len(items)} matches for {label}" + ("  (search cut short)" if stopped else "")
+        if not items:
+            note = f"No {kind} files matched {label}."
 
 
 def run(sel=None):
@@ -397,12 +426,13 @@ def run(sel=None):
                     msg = "Found matching lyrics: " + os.path.basename(match)
         elif choice == "3":
             sel["lyrics"] = pick("lyrics", sel["lyrics"])
-        elif choice in ("4", "p", "play"):
+        elif choice in ("4", "p", "play", "5", "f", "full"):
             if not sel["image"]:
                 msg = "Pick an image first (press 1)."
                 continue
             save_config(sel)
-            return dict(sel)
+            mode = "full" if choice in ("5", "f", "full") else "dock"
+            return dict(sel, mode=mode)
         elif choice:
             msg = f"Unknown choice: {choice!r}"
 

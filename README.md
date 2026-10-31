@@ -95,3 +95,34 @@ no longer needed for playback.
 - Termux's font size can't be set from a script. Pinch-zoom out for a denser render.
 - Audio uses `ffplay` if present, otherwise `termux-media-player`.
 - Your portrait, audio and timed lyric files are git-ignored on purpose.
+
+## Mini bar (work while it plays)
+
+`python3 termviz.py` -> pick image / music / lyrics -> **4 Play in mini bar**.
+
+Termviz opens a slim bar at the top of a tmux window (record on the left, lyrics
+and controls in the middle, portrait on the right). Everything below it is a normal
+shell, so vim, git, etc. keep working in the same terminal.
+
+| key | action |
+|---|---|
+| `F7` / `Space` | pause / resume |
+| `F6` / `p` | previous (restart if past 3 s) |
+| `F8` / `n` | next track (the other songs in the same folder) |
+| `Left` / `Right` | seek -/+ 10 s (bar focused: `Ctrl-b` then `Up`) |
+| `q` | close the bar |
+
+Needs `tmux` and `ffplay` (`sudo apt install tmux ffmpeg`). The F-keys work from
+any pane. Use `--bar-rows N` for a taller or shorter bar, or **5** in the
+dashboard for the old full-screen player.
+
+## Finding files
+
+In the dashboard's picker: type part of a name to search every folder under your
+home (and mounted drives), `*` to list everything, or type a path and press Tab
+to complete it.
+
+## Image detail
+
+The default `--style detail` (sharpen + Atkinson dither) keeps far more detail than
+`threshold`. Other styles are still available with `--style`.
